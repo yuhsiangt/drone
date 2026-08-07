@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>簡易 3D 無人機模擬器 (Web 版)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+        #info {
+            position: absolute; top: 15px; left: 15px; color: #fff;
+            background: rgba(0, 0, 0, 0.7); padding: 15px; border-radius: 8px;
+            pointer-events: none; font-size: 14px; line-height: 1.6;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        #ui-sticks {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 50px; pointer-events: none;
+        }
+        .stick-box { text-align: center; color: #fff; font-size: 12px; }
+        .stick-base {
+            width: 90px; height: 90px; border-radius: 50%; background: rgba(255,255,255,0.15);
+            border: 2px solid rgba(255,255,255,0.4); position: relative; margin-top: 5px;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .stick-handle {
+            width: 30px; height: 30px; border-radius: 50%; background: #ff4757;
+            position: absolute; transition: transform 0.05s ease-out;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <strong>🚁 3D 無人機模擬器</strong><br>
+        <strong>左搖桿：</strong>W / S (高低), A / D (左右轉向)<br>
+        <strong>右搖桿：</strong>上下鍵 (前後), 左右鍵 (左右移)
+    </div>
+    
+    <div id="ui-sticks">
+        <div class="stick-box">
+            左搖桿 (Throttle / Yaw)
+            <div class="stick-base"><div id="left-handle" class="stick-handle"></div></div>
+        </div>
+        <div class="stick-box">
+            右搖桿 (Pitch / Roll)
+            <div class="stick-base"><div id="right-handle" class="stick-handle"></div></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a2e);
+        scene.fog = new THREE.FogExp2(0x1a1a2e, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(20, 40, 20);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        const gridHelper = new THREE.GridHelper(200, 50, 0x00ffcc, 0x444444);
+        gridHelper.position.y = 0;
+        scene.add(gridHelper);
+
+        const planeGeo = new THREE.PlaneGeometry(200, 200);
+        const planeMat = new THREE.MeshStandardMaterial({ color: 0x111118, roughness: 0.8 });
+        const plane = new THREE.Mesh(planeGeo, planeMat);
+        plane.rotation.x = -Math.PI / 2;
+        plane.receiveShadow = true;
+        scene.add(plane);
+
+        const droneGroup = new THREE.Group();
+
+        const bodyMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.5 });
+        const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.4, 1.2), bodyMat);
+        body.castShadow = true;
+        droneGroup.add(body);
+
+        const armMat = new THREE.MeshStandardMaterial({ color: 0x888888 });
+        const arm1 = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.5), armMat);
+        arm1.rotation.z = Math.PI / 2;
+        droneGroup.add(arm1);
+
+        const arm2 = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.5), armMat);
+        arm2.rotation.x = Math.PI / 2;
+        droneGroup.add(arm2);
+
+        const rotors = [];
+        const rotorMat = new THREE.MeshStandardMaterial({ color: 0x00ffcc });
+        const rotorPositions = [[1.25, 0.25, 0], [-1.25, 0.25, 0], [0, 0.25, 1.25], [0, 0.25, -1.25]];
+        
+        rotorPositions.forEach(pos => {
+            const rotor = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.05, 0.2), rotorMat);
+            rotor.position.set(...pos);
+            droneGroup.add(rotor);
+            rotors.push(rotor);
+        });
+
+        droneGroup.position.set(0, 2, 0);
+        scene.add(droneGroup);
+
+        const keys = {};
+        window.addEventListener('keydown', (e) => keys[e.code] = true);
+        window.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        let posX = 0, posY = 2, posZ = 0;
+        let velocityY = 0;
+        let yawAngle = 0;
+        let currentPitch = 0;
+        let currentRoll = 0;
+
+        const leftHandle = document.getElementById('left-handle');
+        const rightHandle = document.getElementById('right-handle');
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            let throttleInput = 0; 
+            let yawInput = 0;      
+            let pitchInput = 0;    
+            let rollInput = 0;     
+
+            if (keys['KeyW']) throttleInput += 1;
+            if (keys['KeyS']) throttleInput -= 1;
+            if (keys['KeyD']) yawInput -= 1;
+            if (keys['KeyA']) yawInput += 1;
+
+            if (keys['ArrowUp']) pitchInput += 1;
+            if (keys['ArrowDown']) pitchInput -= 1;
+            if (keys['ArrowRight']) rollInput += 1;
+            if (keys['ArrowLeft']) rollInput -= 1;
+
+            leftHandle.style.transform = `translate(${ -yawInput * 25 }px, ${ -throttleInput * 25 }px)`;
+            rightHandle.style.transform = `translate(${ rollInput * 25 }px, ${ -pitchInput * 25 }px)`;
+
+            const gravity = 0.015;
+            const lift = throttleInput * 0.035;
+            velocityY += (lift - gravity);
+            velocityY *= 0.95;
+            posY += velocityY;
+            if (posY < 0.2) { posY = 0.2; velocityY = 0; }
+
+            yawAngle += yawInput * 0.03;
+
+            const moveSpeed = 0.1;
+            const forwardX = Math.sin(yawAngle);
+            const forwardZ = Math.cos(yawAngle);
+            const rightX = Math.cos(yawAngle);
+            const rightZ = -Math.sin(yawAngle);
+
+            // 已將左右移（rollInput）方向反轉
+            posX += (forwardX * pitchInput - rightX * rollInput) * moveSpeed;
+            posZ += (forwardZ * pitchInput - rightZ * rollInput) * moveSpeed;
+
+            currentPitch += (pitchInput * 0.3 - currentPitch) * 0.1;
+            currentRoll += (rollInput * 0.3 - currentRoll) * 0.1; // 同步反轉視覺傾斜方向
+
+            droneGroup.position.set(posX, posY, posZ);
+            droneGroup.rotation.y = yawAngle;
+            droneGroup.rotation.x = currentPitch;
+            droneGroup.rotation.z = currentRoll;
+
+            const rotorSpeed = (Math.abs(throttleInput) > 0 || posY > 0.3) ? 0.8 : 0.1;
+            rotors.forEach((r, index) => {
+                r.rotation.y += rotorSpeed * (index % 2 === 0 ? 1 : -1);
+            });
+
+            const camDist = 6, camHeight = 3;
+            const targetCamX = posX - Math.sin(yawAngle) * camDist;
+            const targetCamZ = posZ - Math.cos(yawAngle) * camDist;
+            const targetCamY = posY + camHeight;
+
+            camera.position.x += (targetCamX - camera.position.x) * 0.1;
+            camera.position.y += (targetCamY - camera.position.y) * 0.1;
+            camera.position.z += (targetCamZ - camera.position.z) * 0.1;
+            camera.lookAt(posX, posY, posZ);
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
